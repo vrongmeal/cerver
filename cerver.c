@@ -5,12 +5,35 @@
 #include <unistd.h>
 #include <errno.h>
 #include <signal.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
 #define BACKLOG 10
+#define BUFSIZE 1024
+
+#define HEADER200 "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n"
+#define HEADER404 "HTTP/1.1 404 Not Found\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n"
+
+struct request
+{
+	char type[10];
+	char path[1024];
+};
+
+struct request recv_request(char buf[])
+{
+	struct request req;
+	char delim[4] = " \t\n";
+	char *token;
+	token = strtok(buf, delim);
+	strcpy(req.type, token);
+	token = strtok(NULL, delim);
+	strcpy(req.path, token);
+	return req;
+}
 
 void sigchld_handler(int s)
 {
@@ -39,6 +62,12 @@ int main(int argc, char const *argv[])
 	int yes = 1;
 	char s[INET6_ADDRSTRLEN];
 	int status;
+	char *buffer = malloc(BUFSIZE);
+	char header[BUFSIZE], content[BUFSIZE];
+	int bytes;
+	struct request req;
+	char port[5], location[1024];
+	int file;
 
 	if (argc != 3)
 	{
@@ -46,12 +75,15 @@ int main(int argc, char const *argv[])
 		return 1;
 	}
 
+	stpcpy(location, argv[1]);
+	strcpy(port, argv[2]);
+
 	memset(&hints, 0, sizeof hints);
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_flags = AI_PASSIVE;
 
-	status = getaddrinfo(NULL, argv[2], &hints, &servinfo);
+	status = getaddrinfo(NULL, port, &hints, &servinfo);
 	if (status != 0)
 	{
 		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(status));
@@ -63,7 +95,7 @@ int main(int argc, char const *argv[])
 		sock_fd = socket(i->ai_family, i->ai_socktype, i->ai_protocol);
 		if (sock_fd == -1)
 		{
-			perror("server: socket");
+			perror("cerver: socket");
 			continue;
 		}
 
@@ -76,7 +108,7 @@ int main(int argc, char const *argv[])
 		if (bind(sock_fd, i->ai_addr, i->ai_addrlen) == -1)
 		{
 			close(sock_fd);
-			perror("server: bind");
+			perror("cerver: bind");
 			continue;
 		}
 
@@ -87,7 +119,7 @@ int main(int argc, char const *argv[])
 
 	if (i == NULL)
 	{
-		fprintf(stderr, "server: failed to bind\n");
+		fprintf(stderr, "cerver: failed to bind\n");
 		return 1;
 	}
 
@@ -106,7 +138,7 @@ int main(int argc, char const *argv[])
 		exit(1);
 	}
 
-	printf("server: waiting for connections...\n");
+	printf("cerver: waiting for connections...\n");
 
 	while (1)
 	{
@@ -119,12 +151,47 @@ int main(int argc, char const *argv[])
 		}
 
 		inet_ntop(conn_addr.ss_family, get_in_addr((struct sockaddr *)&conn_addr), s, sizeof s);
-		printf("server: got connection from %s\n", s);
+		printf("cerver: got connection from %s\n", s);
 
 		if (fork() == 0)
 		{
 			close(sock_fd);
-			// Send response back
+
+			memset(buffer, 0, BUFSIZE);
+			if (recv(conn_fd, buffer, BUFSIZE, 0) == -1)
+				perror("recv");
+
+			req = recv_request(buffer);
+
+			strcat(location, req.path);
+
+			printf("::%s:: %s\n", req.type, location);
+
+			if (location[strlen(location) - 1] == '/')
+			{
+				if ((file = open(strcat(location, "index.html"), O_RDONLY)) != -1)
+					strcpy(header, HEADER200);
+				else if ((file = open(strcat(location, "index.htm"), O_RDONLY)) != -1)
+					strcpy(header, HEADER200);
+			}
+			else if ((file = open(location, O_RDONLY)) != -1)
+				strcpy(header, HEADER200);
+			else
+				strcpy(header, HEADER404);
+
+			if (send(conn_fd, header, strlen(header), 0) == -1)
+				perror("send");
+			else
+			{
+				if (strcmp(header, HEADER200) == 0)
+				{
+					while ((bytes = read(file, content, BUFSIZE)) > 0)
+						write(conn_fd, content, bytes);
+				}
+				else
+					write(conn_fd, "404 Page Not Found", 19);
+			}
+
 			close(conn_fd);
 			exit(0);
 		}
