@@ -5,6 +5,10 @@
 #include <unistd.h>
 #include <errno.h>
 #include <signal.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #define BACKLOG 10
 
@@ -14,6 +18,15 @@ void sigchld_handler(int s)
 	while (waitpid(-1, NULL, WNOHANG) > 0)
 		;
 	errno = saved_errno;
+}
+
+void *get_in_addr(struct sockaddr *sa)
+{
+	if (sa->sa_family == AF_INET)
+	{
+		return &(((struct sockaddr_in *)sa)->sin_addr);
+	}
+	return &(((struct sockaddr_in6 *)sa)->sin6_addr);
 }
 
 int main(int argc, char const *argv[])
@@ -105,13 +118,13 @@ int main(int argc, char const *argv[])
 			continue;
 		}
 
-		printf("server: got new connection\n");
+		inet_ntop(conn_addr.ss_family, get_in_addr((struct sockaddr *)&conn_addr), s, sizeof s);
+		printf("server: got connection from %s\n", s);
 
 		if (fork() == 0)
 		{
 			close(sock_fd);
-			if (send(conn_fd, "Ping", 4, 0) == -1)
-				perror("send");
+			// Send response back
 			close(conn_fd);
 			exit(0);
 		}
